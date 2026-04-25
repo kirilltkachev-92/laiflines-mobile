@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -24,6 +25,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,20 +43,24 @@ import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.nodegraph.domain.repository.GraphStepRepository
 import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sin
 import kotlin.random.Random
+import kotlinx.coroutines.launch
 
 private const val MIN_OUTER_COUNT = 2
 private const val MAX_OUTER_COUNT = 5
+private const val INITIAL_OUTER_COUNT = 3
 private const val TRANSITION_MILLIS = 8000
 private const val TWO_PI = (2.0 * kotlin.math.PI).toFloat()
 private val FAN_HALF_ANGLE = (kotlin.math.PI / 4.0).toFloat()
 private const val EDGE_CURVATURE = 0.28f
 private const val RING_RADIUS = 2.0f
 
-private fun randomOuterCount(): Int = Random.nextInt(MIN_OUTER_COUNT, MAX_OUTER_COUNT + 1)
+private fun clampOuterCount(count: Int): Int =
+    count.coerceIn(MIN_OUTER_COUNT, MAX_OUTER_COUNT)
 
 private fun rightFanAngle(i: Int, count: Int): Float {
     if (count <= 1) return 0f
@@ -85,9 +91,9 @@ private class NodeFactory {
     }
 }
 
-private fun buildInitialState(factory: NodeFactory): GraphState {
+private fun buildInitialState(factory: NodeFactory, outerCount: Int): GraphState {
     val center = factory.create(Offset.Zero)
-    val count = randomOuterCount()
+    val count = clampOuterCount(outerCount)
     val outer = List(count) { i ->
         val a = rightFanAngle(i, count)
         factory.create(Offset(cos(a) * RING_RADIUS, sin(a) * RING_RADIUS))
@@ -103,9 +109,10 @@ private fun buildInitialState(factory: NodeFactory): GraphState {
 private fun buildTransition(
     current: GraphState,
     target: WorldNode,
-    factory: NodeFactory
+    factory: NodeFactory,
+    outerCount: Int
 ): Transition {
-    val count = randomOuterCount()
+    val count = clampOuterCount(outerCount)
     val newOuter = List(count) { i ->
         val a = rightFanAngle(i, count)
         factory.create(
@@ -133,14 +140,16 @@ private fun buildTransition(
 }
 
 @Composable
-fun App() {
+fun App(repository: GraphStepRepository) {
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             val factory = remember { NodeFactory() }
-            var state by remember { mutableStateOf(buildInitialState(factory)) }
+            var state by remember { mutableStateOf(buildInitialState(factory, INITIAL_OUTER_COUNT)) }
             var pickerSeed by remember { mutableStateOf(Random.nextInt()) }
             var transition by remember { mutableStateOf<Transition?>(null) }
+            var loading by remember { mutableStateOf(false) }
             val progress = remember { Animatable(0f) }
+            val scope = rememberCoroutineScope()
 
             LaunchedEffect(transition) {
                 val t = transition ?: return@LaunchedEffect
@@ -198,11 +207,28 @@ fun App() {
                             Spacer(Modifier.height(4.dp))
                             outerNodes.forEach { node ->
                                 Button(
+                                    enabled = !loading,
                                     onClick = {
-                                        transition = buildTransition(state, node, factory)
+                                        loading = true
+                                        scope.launch {
+                                            val nextStep = runCatching { repository.getNextStep() }.getOrNull()
+                                            val count = nextStep?.nodeCount
+                                                ?: Random.nextInt(MIN_OUTER_COUNT, MAX_OUTER_COUNT + 1)
+                                            transition = buildTransition(state, node, factory, count)
+                                            loading = false
+                                        }
                                     },
                                     modifier = Modifier.fillMaxWidth()
-                                ) { Text("Move to ${node.label}") }
+                                ) {
+                                    if (loading) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.height(18.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                    } else {
+                                        Text("Move to ${node.label}")
+                                    }
+                                }
                             }
                         }
                     },
